@@ -16,6 +16,20 @@ import {
   BookOpen
 } from 'lucide-react';
 
+// Import Firebase
+import { db, isFirebaseConfigured } from './firebase';
+import { 
+  collection, 
+  onSnapshot, 
+  addDoc, 
+  doc, 
+  updateDoc, 
+  increment, 
+  query, 
+  orderBy, 
+  serverTimestamp 
+} from 'firebase/firestore';
+
 // Import avatars
 import avatar15 from './assets/avatar_15.png';
 import avatar25 from './assets/avatar_25.png';
@@ -47,8 +61,7 @@ const INITIAL_TIPS = [
     text: 'Start saving 10% of whatever you earn immediately. Compound interest is a real cheat code, and those designer clothes won\'t matter in 10 years.',
     reason: 'I had to work until 65 because I spent my 20s buying things I didn\'t need to impress people I didn\'t like.',
     lifestyle: 'Retired Accountant, coffee lover',
-    kudos: 42,
-    kudosed: false
+    kudos: 42
   },
   {
     id: 'tip-2',
@@ -59,8 +72,7 @@ const INITIAL_TIPS = [
     text: 'Wear sunscreen every single day, even in winter. Your skin will thank you, and lift weights to build joint resilience.',
     reason: 'I got a melanoma scare at 35 and my lower back started hurting constantly.',
     lifestyle: 'Product Designer, weekend hiker',
-    kudos: 28,
-    kudosed: false
+    kudos: 28
   },
   {
     id: 'tip-3',
@@ -71,8 +83,7 @@ const INITIAL_TIPS = [
     text: 'Don\'t let pride end friendships. Apologize first, even if it feels unfair. True friends are hard to find in your 50s.',
     reason: 'I lost touch with my college roommate over a trivial argument about money.',
     lifestyle: 'Writer, empty nester',
-    kudos: 89,
-    kudosed: false
+    kudos: 89
   },
   {
     id: 'tip-4',
@@ -83,8 +94,7 @@ const INITIAL_TIPS = [
     text: 'Travel solo at least once. It forces you to build confidence, talk to strangers, and figure out who you are outside your comfort bubble.',
     reason: 'I was terrified of being alone but it completely changed my career path.',
     lifestyle: 'Digital Nomad, coffee enthusiast',
-    kudos: 15,
-    kudosed: false
+    kudos: 15
   },
   {
     id: 'tip-5',
@@ -95,8 +105,7 @@ const INITIAL_TIPS = [
     text: 'Slightly slow down your heavy partying habits. Your liver is durable now, but chronic inflammation builds up and manifests as illness at 58.',
     reason: 'Diagnosed with fatty liver and joint issues that could have been avoided.',
     lifestyle: 'Consultant, active cyclist',
-    kudos: 54,
-    kudosed: false
+    kudos: 54
   }
 ];
 
@@ -109,8 +118,17 @@ export default function App() {
 
   // Tips state
   const [tips, setTips] = useState(() => {
-    const saved = localStorage.getItem('selfs_tips');
-    return saved ? JSON.parse(saved) : INITIAL_TIPS;
+    if (!isFirebaseConfigured) {
+      const saved = localStorage.getItem('selfs_tips');
+      return saved ? JSON.parse(saved) : INITIAL_TIPS;
+    }
+    return [];
+  });
+
+  // Track which tips the user has kudosed locally
+  const [kudosedIds, setKudosedIds] = useState(() => {
+    const saved = localStorage.getItem('selfs_kudosed_ids');
+    return saved ? JSON.parse(saved) : [];
   });
 
   // UI state
@@ -133,18 +151,6 @@ export default function App() {
   const [formError, setFormError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
 
-  // Calculate age from DOB helper
-  const calculateAge = (dobString) => {
-    const today = new Date();
-    const birthDate = new Date(dobString);
-    let age = today.getFullYear() - birthDate.getFullYear();
-    const m = today.getMonth() - birthDate.getMonth();
-    if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
-      age--;
-    }
-    return age;
-  };
-
   // Sync profile to local storage
   useEffect(() => {
     if (profile) {
@@ -154,10 +160,49 @@ export default function App() {
     }
   }, [profile]);
 
-  // Sync tips to local storage
+  // Sync tips to local storage (only when NOT using Firebase)
   useEffect(() => {
-    localStorage.setItem('selfs_tips', JSON.stringify(tips));
-  }, [tips]);
+    if (!isFirebaseConfigured) {
+      localStorage.setItem('selfs_tips', JSON.stringify(tips));
+    }
+  }, [tips, isFirebaseConfigured]);
+
+  // Sync kudosed tips
+  useEffect(() => {
+    localStorage.setItem('selfs_kudosed_ids', JSON.stringify(kudosedIds));
+  }, [kudosedIds]);
+
+  // Load and Sync tips from Firestore
+  useEffect(() => {
+    if (!isFirebaseConfigured || !db) return;
+
+    const tipsCollection = collection(db, 'tips');
+    const q = query(tipsCollection, orderBy('createdAt', 'desc'));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const loadedTips = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+
+      // Auto-migrate mock data if Firestore is empty
+      if (loadedTips.length === 0) {
+        INITIAL_TIPS.forEach(async (tip) => {
+          const { id, ...tipData } = tip;
+          await addDoc(tipsCollection, {
+            ...tipData,
+            createdAt: serverTimestamp()
+          });
+        });
+      } else {
+        setTips(loadedTips);
+      }
+    }, (error) => {
+      console.error("Error listening to tips updates:", error);
+    });
+
+    return () => unsubscribe();
+  }, [isFirebaseConfigured]);
 
   // Set default slider value based on user current age
   useEffect(() => {
@@ -172,6 +217,18 @@ export default function App() {
       else setSelectedTimelineAge(65);
     }
   }, [profile]);
+
+  // Calculate age from DOB helper
+  const calculateAge = (dobString) => {
+    const today = new Date();
+    const birthDate = new Date(dobString);
+    let age = today.getFullYear() - birthDate.getFullYear();
+    const m = today.getMonth() - birthDate.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
+      age--;
+    }
+    return age;
+  };
 
   // Handle onboarding submission
   const handleOnboarding = (e) => {
@@ -207,7 +264,7 @@ export default function App() {
 
   // Handle logout / reset profile
   const handleResetProfile = () => {
-    if (window.confirm('Are you sure you want to reset your profile? This will clear your personal feed preferences, but your custom tips will remain.')) {
+    if (window.confirm('Are you sure you want to reset your profile? This will clear your personal feed preferences, but the posted tips will remain.')) {
       setProfile(null);
       setOnboardingName('');
       setOnboardingDob('');
@@ -216,23 +273,44 @@ export default function App() {
   };
 
   // Handle Kudos
-  const handleKudos = (tipId) => {
-    setTips(prevTips => 
-      prevTips.map(tip => {
-        if (tip.id === tipId) {
-          return {
-            ...tip,
-            kudos: tip.kudosed ? tip.kudos - 1 : tip.kudos + 1,
-            kudosed: !tip.kudosed
-          };
-        }
-        return tip;
-      })
-    );
+  const handleKudos = async (tipId) => {
+    const isAlreadyKudosed = kudosedIds.includes(tipId);
+
+    if (isFirebaseConfigured && db) {
+      try {
+        const tipDocRef = doc(db, 'tips', tipId);
+        await updateDoc(tipDocRef, {
+          kudos: increment(isAlreadyKudosed ? -1 : 1)
+        });
+      } catch (err) {
+        console.error("Error updating kudos: ", err);
+        return;
+      }
+    } else {
+      // Local storage fallback logic
+      setTips(prevTips => 
+        prevTips.map(tip => {
+          if (tip.id === tipId) {
+            return {
+              ...tip,
+              kudos: isAlreadyKudosed ? tip.kudos - 1 : tip.kudos + 1,
+            };
+          }
+          return tip;
+        })
+      );
+    }
+
+    // Toggle local like state
+    if (isAlreadyKudosed) {
+      setKudosedIds(prev => prev.filter(id => id !== tipId));
+    } else {
+      setKudosedIds(prev => [...prev, tipId]);
+    }
   };
 
   // Handle Tip Submission
-  const handleCreateTip = (e) => {
+  const handleCreateTip = async (e) => {
     e.preventDefault();
     if (!tipText.trim()) {
       setFormError('Please write your tip.');
@@ -247,8 +325,7 @@ export default function App() {
       return;
     }
 
-    const newTipObj = {
-      id: `custom-tip-${Date.now()}`,
+    const tipData = {
       author: profile.name,
       authorAge: profile.currentAge,
       targetAge: Number(tipTargetAge),
@@ -256,11 +333,29 @@ export default function App() {
       text: tipText,
       reason: tipReason,
       lifestyle: profile.lifestyle,
-      kudos: 0,
-      kudosed: false
+      kudos: 0
     };
 
-    setTips([newTipObj, ...tips]);
+    if (isFirebaseConfigured && db) {
+      try {
+        await addDoc(collection(db, 'tips'), {
+          ...tipData,
+          createdAt: serverTimestamp()
+        });
+      } catch (err) {
+        console.error("Error writing document to Firestore: ", err);
+        setFormError("Failed to save wisdom to database. Please try again.");
+        return;
+      }
+    } else {
+      // Local storage fallback
+      const newTipObj = {
+        id: `custom-tip-${Date.now()}`,
+        ...tipData,
+      };
+      setTips([newTipObj, ...tips]);
+    }
+
     setTipText('');
     setTipReason('');
     setFormError('');
@@ -291,8 +386,7 @@ export default function App() {
       // 2. Tab Filter
       if (profile) {
         if (activeTab === 'for-me') {
-          // Tips written by anyone targeting my current age group
-          // Target age matches user's current age (+/- 2 years)
+          // Tips written by anyone targeting my current age group (+/- 2 years)
           const ageDiff = Math.abs(tip.targetAge - profile.currentAge);
           if (ageDiff > 2) return false;
         } else if (activeTab === 'from-future') {
@@ -389,6 +483,12 @@ export default function App() {
         <a className="logo" onClick={() => { setActiveTab('all'); setActiveCategory('all'); setSearchQuery(''); }}>
           <span>Self<span className="gradient-text">’s</span></span>
         </a>
+
+        {isFirebaseConfigured && (
+          <div style={{ fontSize: '0.75rem', color: 'var(--accent-health)', background: 'rgba(16, 185, 129, 0.08)', padding: '0.25rem 0.6rem', borderRadius: 'var(--radius-full)', border: '1px solid rgba(16, 185, 129, 0.2)', fontWeight: 600 }}>
+            ● DB Live
+          </div>
+        )}
 
         <div className="user-profile-header">
           <div className="user-profile-info">
@@ -684,6 +784,7 @@ export default function App() {
               {filteredTips.length > 0 ? (
                 filteredTips.map((tip) => {
                   const CategoryIcon = CATEGORIES.find(c => c.id === tip.category)?.icon || Sparkles;
+                  const isKudosed = kudosedIds.includes(tip.id);
                   return (
                     <div key={tip.id} className={`wisdom-card glass-card ${tip.category}`}>
                       
@@ -720,11 +821,11 @@ export default function App() {
                           <span>Lifestyle: {tip.lifestyle}</span>
                         </div>
                         <button 
-                          className={`kudos-btn ${tip.kudosed ? 'active' : ''}`}
+                          className={`kudos-btn ${isKudosed ? 'active' : ''}`}
                           onClick={() => handleKudos(tip.id)}
                         >
                           <Smile size={14} />
-                          <span>Kudos • {tip.kudos}</span>
+                          <span>Kudos • {tip.kudos || 0}</span>
                         </button>
                       </div>
 
