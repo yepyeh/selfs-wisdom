@@ -13,22 +13,33 @@ import {
   Calendar,
   Compass as CompassIcon,
   Smile,
-  BookOpen
+  BookOpen,
+  Lock,
+  Mail,
+  Loader
 } from 'lucide-react';
 
 // Import Firebase
-import { db, isFirebaseConfigured } from './firebase';
+import { db, auth, isFirebaseConfigured } from './firebase';
 import { 
   collection, 
   onSnapshot, 
   addDoc, 
   doc, 
+  getDoc,
+  setDoc,
   updateDoc, 
   increment, 
   query, 
   orderBy, 
   serverTimestamp 
 } from 'firebase/firestore';
+import { 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  signOut, 
+  onAuthStateChanged 
+} from 'firebase/auth';
 
 // Import avatars
 import avatar15 from './assets/avatar_15.png';
@@ -110,6 +121,19 @@ const INITIAL_TIPS = [
 ];
 
 export default function App() {
+  // Auth state
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [authTab, setAuthTab] = useState('login'); // 'login' | 'signup'
+
+  // Auth Form State
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authConfirmPassword, setAuthConfirmPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authActionLoading, setAuthActionLoading] = useState(false);
+
   // Profile state
   const [profile, setProfile] = useState(() => {
     const saved = localStorage.getItem('selfs_profile');
@@ -137,7 +161,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTimelineAge, setSelectedTimelineAge] = useState(25);
 
-  // Form state
+  // Onboarding Form state
   const [onboardingName, setOnboardingName] = useState('');
   const [onboardingDob, setOnboardingDob] = useState('');
   const [onboardingLifestyle, setOnboardingLifestyle] = useState('');
@@ -151,14 +175,26 @@ export default function App() {
   const [formError, setFormError] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
 
-  // Sync profile to local storage
+  // Calculate age from DOB helper
+  const calculateAge = (dobString) => {
+    const today = new Date();
+    const birthDate = new Date(dobString);
+    let age = today.getFullYear() - birthDate.getFullYear();
+    const m = today.getMonth() - birthDate.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
+      age--;
+    }
+    return age;
+  };
+
+  // Sync profile to local storage (only when NOT using Firebase)
   useEffect(() => {
-    if (profile) {
+    if (!isFirebaseConfigured && profile) {
       localStorage.setItem('selfs_profile', JSON.stringify(profile));
-    } else {
+    } else if (!isFirebaseConfigured && !profile) {
       localStorage.removeItem('selfs_profile');
     }
-  }, [profile]);
+  }, [profile, isFirebaseConfigured]);
 
   // Sync tips to local storage (only when NOT using Firebase)
   useEffect(() => {
@@ -171,6 +207,47 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('selfs_kudosed_ids', JSON.stringify(kudosedIds));
   }, [kudosedIds]);
+
+  // Observe Firebase Auth State
+  useEffect(() => {
+    if (!isFirebaseConfigured || !auth) {
+      setAuthLoading(false);
+      return;
+    }
+
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      
+      if (currentUser) {
+        setProfileLoading(true);
+        try {
+          const userDocRef = doc(db, 'users', currentUser.uid);
+          const userDocSnap = await getDoc(userDocRef);
+          
+          if (userDocSnap.exists()) {
+            const data = userDocSnap.data();
+            const age = calculateAge(data.dob);
+            setProfile({
+              ...data,
+              currentAge: age
+            });
+          } else {
+            // Profile doesn't exist, user needs to complete onboarding
+            setProfile(null);
+          }
+        } catch (err) {
+          console.error("Error loading user profile from Firestore:", err);
+        } finally {
+          setProfileLoading(false);
+        }
+      } else {
+        setProfile(null);
+      }
+      setAuthLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [isFirebaseConfigured]);
 
   // Load and Sync tips from Firestore
   useEffect(() => {
@@ -218,20 +295,52 @@ export default function App() {
     }
   }, [profile]);
 
-  // Calculate age from DOB helper
-  const calculateAge = (dobString) => {
-    const today = new Date();
-    const birthDate = new Date(dobString);
-    let age = today.getFullYear() - birthDate.getFullYear();
-    const m = today.getMonth() - birthDate.getMonth();
-    if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
-      age--;
+  // Handle Authentication (Login / Signup)
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+
+    if (!authEmail.trim() || !authPassword.trim()) {
+      setAuthError('Please fill in all fields.');
+      return;
     }
-    return age;
+
+    if (authTab === 'signup' && authPassword !== authConfirmPassword) {
+      setAuthError('Passwords do not match.');
+      return;
+    }
+
+    setAuthActionLoading(true);
+
+    try {
+      if (authTab === 'login') {
+        await signInWithEmailAndPassword(auth, authEmail, authPassword);
+      } else {
+        await createUserWithEmailAndPassword(auth, authEmail, authPassword);
+      }
+      setAuthEmail('');
+      setAuthPassword('');
+      setAuthConfirmPassword('');
+    } catch (err) {
+      console.error("Authentication error:", err);
+      if (err.code === 'auth/email-already-in-use') {
+        setAuthError('This email is already registered.');
+      } else if (err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found') {
+        setAuthError('Invalid email or password.');
+      } else if (err.code === 'auth/invalid-email') {
+        setAuthError('Please enter a valid email address.');
+      } else if (err.code === 'auth/weak-password') {
+        setAuthError('Password must be at least 6 characters.');
+      } else {
+        setAuthError(err.message || 'An error occurred during authentication.');
+      }
+    } finally {
+      setAuthActionLoading(false);
+    }
   };
 
   // Handle onboarding submission
-  const handleOnboarding = (e) => {
+  const handleOnboarding = async (e) => {
     e.preventDefault();
     if (!onboardingName.trim()) {
       setOnboardingError('Please enter your name.');
@@ -252,23 +361,57 @@ export default function App() {
       return;
     }
 
-    const newProfile = {
+    const profileData = {
       name: onboardingName,
       dob: onboardingDob,
-      lifestyle: onboardingLifestyle,
-      currentAge: age
+      lifestyle: onboardingLifestyle
     };
-    setProfile(newProfile);
+
+    if (isFirebaseConfigured && db && user) {
+      try {
+        const userDocRef = doc(db, 'users', user.uid);
+        await setDoc(userDocRef, {
+          ...profileData,
+          createdAt: serverTimestamp()
+        });
+        setProfile({
+          ...profileData,
+          currentAge: age
+        });
+      } catch (err) {
+        console.error("Error saving profile to Firestore:", err);
+        setOnboardingError("Failed to save profile to database.");
+        return;
+      }
+    } else {
+      // Local storage fallback (for simulated local mode)
+      const newProfile = {
+        ...profileData,
+        currentAge: age
+      };
+      setProfile(newProfile);
+    }
     setOnboardingError('');
   };
 
   // Handle logout / reset profile
-  const handleResetProfile = () => {
-    if (window.confirm('Are you sure you want to reset your profile? This will clear your personal feed preferences, but the posted tips will remain.')) {
-      setProfile(null);
-      setOnboardingName('');
-      setOnboardingDob('');
-      setOnboardingLifestyle('');
+  const handleResetProfile = async () => {
+    if (isFirebaseConfigured && auth) {
+      if (window.confirm('Are you sure you want to sign out?')) {
+        try {
+          await signOut(auth);
+        } catch (err) {
+          console.error("Error signing out:", err);
+        }
+      }
+    } else {
+      // Local simulation fallback
+      if (window.confirm('Are you sure you want to reset your local profile? This will clear your credentials.')) {
+        setProfile(null);
+        setOnboardingName('');
+        setOnboardingDob('');
+        setOnboardingLifestyle('');
+      }
     }
   };
 
@@ -412,7 +555,143 @@ export default function App() {
     });
   }, [tips, activeCategory, activeTab, searchQuery, profile]);
 
-  // Render onboarding
+  // Loading screen
+  if (authLoading) {
+    return (
+      <div className="onboarding-container">
+        <div className="onboarding-card glass-panel text-center" style={{ padding: '4rem 2rem' }}>
+          <Loader className="gradient-text animate-spin" size={40} style={{ margin: '0 auto 1rem auto', animation: 'spin 1.5s linear infinite' }} />
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem' }}>Securing timeline tunnel...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // 1. Login / Signup View (Only if Firebase is active and user is logged out)
+  if (isFirebaseConfigured && !user) {
+    return (
+      <div className="onboarding-container">
+        <div className="onboarding-card glass-panel">
+          <div className="text-center mb-4">
+            <h1 style={{ fontSize: '2.5rem', fontWeight: 800, marginBottom: '0.5rem' }}>
+              Self<span className="gradient-text">’s</span>
+            </h1>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem' }}>
+              Access your personalized wisdom timeline
+            </p>
+          </div>
+
+          {/* Toggle Tabs */}
+          <div style={{ 
+            display: 'flex', 
+            background: 'rgba(255, 255, 255, 0.03)', 
+            padding: '0.25rem', 
+            borderRadius: 'var(--radius-md)', 
+            border: '1px solid var(--border-color)',
+            marginBottom: '1.5rem',
+            marginTop: '1.5rem'
+          }}>
+            <button 
+              type="button" 
+              className={`btn ${authTab === 'login' ? 'btn-primary' : 'btn-secondary'}`}
+              style={{ flex: 1, padding: '0.5rem 1rem', fontSize: '0.9rem' }}
+              onClick={() => { setAuthTab('login'); setAuthError(''); }}
+            >
+              Sign In
+            </button>
+            <button 
+              type="button" 
+              className={`btn ${authTab === 'signup' ? 'btn-primary' : 'btn-secondary'}`}
+              style={{ flex: 1, padding: '0.5rem 1rem', fontSize: '0.9rem' }}
+              onClick={() => { setAuthTab('signup'); setAuthError(''); }}
+            >
+              Register
+            </button>
+          </div>
+
+          <form onSubmit={handleAuth}>
+            <div className="form-group">
+              <label htmlFor="email" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <Mail size={14} /> Email Address
+              </label>
+              <input 
+                type="email" 
+                id="email" 
+                className="form-input" 
+                placeholder="you@example.com" 
+                value={authEmail}
+                onChange={(e) => setAuthEmail(e.target.value)}
+                required
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="password" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <Lock size={14} /> Password
+              </label>
+              <input 
+                type="password" 
+                id="password" 
+                className="form-input" 
+                placeholder="••••••••" 
+                value={authPassword}
+                onChange={(e) => setAuthPassword(e.target.value)}
+                required
+              />
+            </div>
+
+            {authTab === 'signup' && (
+              <div className="form-group">
+                <label htmlFor="confirmPassword" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <Lock size={14} /> Confirm Password
+                </label>
+                <input 
+                  type="password" 
+                  id="confirmPassword" 
+                  className="form-input" 
+                  placeholder="••••••••" 
+                  value={authConfirmPassword}
+                  onChange={(e) => setAuthConfirmPassword(e.target.value)}
+                  required
+                />
+              </div>
+            )}
+
+            {authError && <div className="error-text mb-4">{authError}</div>}
+
+            <button 
+              type="submit" 
+              className="btn btn-primary" 
+              style={{ width: '100%', marginTop: '1rem' }}
+              disabled={authActionLoading}
+            >
+              {authActionLoading ? (
+                <>Loading...</>
+              ) : authTab === 'login' ? (
+                <>Sign In <Sparkles size={18} /></>
+              ) : (
+                <>Create Account <Sparkles size={18} /></>
+              )}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // Loading profile screen
+  if (profileLoading) {
+    return (
+      <div className="onboarding-container">
+        <div className="onboarding-card glass-panel text-center" style={{ padding: '4rem 2rem' }}>
+          <Loader className="gradient-text animate-spin" size={40} style={{ margin: '0 auto 1rem auto', animation: 'spin 1.5s linear infinite' }} />
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem' }}>Retrieving your timeline credentials...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // 2. Onboarding Profile Setup (If logged in but hasn't completed profile yet)
   if (!profile) {
     return (
       <div className="onboarding-container">
@@ -467,6 +746,17 @@ export default function App() {
               Create My Self <Sparkles size={18} />
             </button>
           </form>
+          
+          {isFirebaseConfigured && (
+            <button 
+              type="button" 
+              className="btn btn-secondary" 
+              style={{ width: '100%', marginTop: '1rem', background: 'transparent', borderColor: 'transparent', color: 'var(--text-muted)' }}
+              onClick={() => signOut(auth)}
+            >
+              Sign Out
+            </button>
+          )}
         </div>
       </div>
     );
@@ -501,7 +791,7 @@ export default function App() {
           <button 
             className="btn-close" 
             onClick={handleResetProfile} 
-            title="Reset Profile" 
+            title={isFirebaseConfigured ? "Sign Out" : "Reset Profile"} 
             style={{ 
               background: 'transparent', 
               border: 'none', 

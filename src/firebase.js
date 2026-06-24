@@ -1,5 +1,6 @@
 import { initializeApp, getApps } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
+import { getAuth } from 'firebase/auth';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -13,11 +14,13 @@ const firebaseConfig = {
 const isFirebaseConfigured = !!import.meta.env.VITE_FIREBASE_API_KEY;
 
 let db = null;
+let auth = null;
 
 if (isFirebaseConfigured) {
   try {
     const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
     db = getFirestore(app);
+    auth = getAuth(app);
   } catch (error) {
     console.error("Failed to initialize Firebase:", error);
   }
@@ -28,4 +31,4 @@ if (isFirebaseConfigured) {
   );
 }
 
-export { db, isFirebaseConfigured };
+export { db, auth, isFirebaseConfigured };
