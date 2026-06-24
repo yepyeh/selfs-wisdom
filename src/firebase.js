@@ -3,16 +3,14 @@ import { getFirestore } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 
 // Firebase Web SDK Configuration
-// Note: Web API keys are public client-side keys used by the browser to connect to Firebase.
-// Security is handled by Firestore Security Rules.
 const firebaseConfig = {
-  apiKey: "AIzaSyAAQMFB97Hy1K9Q-pvDHSancFdma8OImv8",
+  apiKey: "AIzaSyAAQMFB97Hy1K9Q-pvDHSancFdma80Iwv8",
   authDomain: "self-wisdom.firebaseapp.com",
   projectId: "self-wisdom",
   storageBucket: "self-wisdom.firebasestorage.app",
   messagingSenderId: "860404830166",
   appId: "1:860404830166:web:d54be4c4ec0e58167ade77",
-  measurementId: "G-BSJC9ZS9LW"
+  measurementId: "G-BSJC92S9LW"
 };
 
 const isFirebaseConfigured = true;
